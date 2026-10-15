@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Office</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="3"/><circle cx="9.5" cy="12" r="1.5"/><circle cx="14.5" cy="12" r="1.5"/><path d="M12 3v3M2 11v3M22 11v3"/></svg></div>
+    <b>AI Office</b><span class="sub">Your local Claude Code workspace</span>
+  </div>
+  <div class="stats">
+    <span class="machine"><i class="dot" id="connDot"></i><span id="hostName">Local Machine</span></span>
+    <span>CPU <b id="sCpu">–</b></span><span>RAM <b id="sRam">–</b></span><span>Disk <b id="sDisk">–</b></span>
+    <button class="icon-btn" id="settingsTop" title="Settings" data-icon="gear"></button>
+  </div>
+</header>
+
+<main>
+  <nav class="side card">
+    <ul class="nav">
+      <li class="active" data-nav="office"><span data-icon="home"></span>Office</li>
+      <li data-nav="projects"><span data-icon="folder"></span>Projects</li>
+      <li data-nav="agents"><span data-icon="users"></span>Agents</li>
+      <li data-nav="terminal"><span data-icon="terminal"></span>Terminal</li>
+      <li data-nav="settings"><span data-icon="gear"></span>Settings</li>
+    </ul>
+    <div class="agents-head"><span>Agents (<span id="agentCount">0/8</span>)</span><button class="icon-btn sm" id="hireBtn" title="Add agent" data-icon="plus"></button></div>
+    <div id="agentList" class="agent-list"></div>
+    <div class="sys card2" id="sysCard">
+      <div class="sys-row"><span data-icon="bolt" class="bolt"></span><div><b id="sysTitle">Connecting…</b><div class="muted" id="sysSub">Starting the office</div></div></div>
+      <span class="pill" id="sysPill">Offline</span>
+    </div>
+  </nav>
+
+  <section class="center">
+    <div class="office card" id="officeCard">
+      <div class="office-tools">
+        <button class="otool" id="tWander" title="Let idle agents walk around (W)" data-icon="walk"></button>
+        <span class="tool-sep"></span>
+        <button class="otool" id="tChat" title="Show/hide chat (C)" data-icon="chat"></button>
+        <button class="otool" id="tEditor" title="Show/hide editor (E)" data-icon="code"></button>
+        <button class="otool" id="tTerm" title="Show/hide terminal (T)" data-icon="terminal"></button>
+        <span class="tool-sep"></span>
+        <button class="otool" id="tZout" title="Zoom out (−)" data-icon="zoomout"></button>
+        <button class="otool" id="tFit" title="Show whole building (0)" data-icon="fit"></button>
+        <button class="otool" id="tZin" title="Zoom in (+)" data-icon="zoomin"></button>
+        <span class="tool-sep"></span>
+        <button class="otool" id="tFocus" title="Focus: only the office (F)" data-icon="maximize"></button>
+      </div>
+      <div class="focus-hint" id="focusHint">Press <b>Esc</b> or <b>F</b> to exit focus · drag to move · scroll to zoom</div>
+      <div class="office-frame" id="officeFrame">
+        <canvas id="officeCanvas"></canvas>
+        <div id="labels"></div>
+      </div>
+    </div>
+    <div class="bottom">
+      <div class="card panel" id="editorPanel">
+        <div class="panel-head"><span data-icon="code" class="accent"></span>Editor<span class="tag">read-only</span><span class="spacer"></span><button class="icon-btn sm" id="treeRefresh" title="Refresh files" data-icon="refresh"></button></div>
+        <div class="editor">
+          <div class="explorer"><div class="explorer-title">EXPLORER</div><div id="tree" class="tree"></div></div>
+          <div class="code-area">
+            <div class="code-tabs" id="codeTabs"></div>
+            <div class="code" id="code"><div class="empty-code">Select a file to view it.</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panel" id="termPanel">
+        <div class="panel-head">Terminal</div>
+        <div class="term-tabs"><span class="term-tab"><span data-icon="terminal" class="small"></span><span id="termTitle">activity</span></span><span class="spacer"></span>
+          <button class="icon-btn sm" id="termClear" title="Clear view" data-icon="trash"></button>
+          <button class="icon-btn sm" id="termStop" title="Stop task" data-icon="stop"></button></div>
+        <div class="term" id="term"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="resizer" id="resizer" title="Drag to resize"></div>
+    <div class="card chat-card">
+      <div class="chat-head" id="chatHead">
+        <img id="chatAvatar" class="avatar lg" alt="">
+        <div><div class="chat-name" id="chatName">No agent selected</div><div class="muted small-row"><i class="dot" id="chatDot"></i><span id="chatStatus">Add an agent to start</span></div></div>
+        <span class="spacer"></span>
+        <button class="icon-btn" id="chatStop" title="Stop task" data-icon="stop"></button>
+        <div class="size-ctl"><button class="icon-btn sm" id="fsDown" title="Smaller text">A−</button><button class="icon-btn sm" id="fsUp" title="Bigger text">A+</button></div>
+        <button class="icon-btn" id="chatMax" title="Expand conversation (X)" data-icon="maximize"></button>
+      </div>
+      <div class="tabs"><button class="tab active" data-tab="chat">Chat</button><button class="tab" data-tab="files">Files</button><button class="tab" data-tab="context">Context</button></div>
+      <div class="tab-body" id="tabChat"></div>
+      <div class="tab-body hidden" id="tabFiles"></div>
+      <div class="tab-body hidden" id="tabContext"></div>
+      <form class="composer" id="composer">
+        <textarea id="msg" rows="1" placeholder="Type a message…"></textarea>
+        <button type="submit" class="send" id="sendBtn" title="Send (Enter)" data-icon="send"></button>
+      </form>
+    </div>
+    <div class="card project">
+      <div class="panel-head">Project Info</div>
+      <div class="proj-main"><span data-icon="folder" class="big"></span><div><b id="projName">—</b><div class="muted small-row" id="projStack"></div></div></div>
+      <p class="muted proj-desc" id="projDesc">Select an agent to see its project.</p>
+      <div class="qa-title">Quick Actions</div>
+      <button class="qa" id="qaSwitch"><span data-icon="swap"></span>Switch project…</button>
+      <button class="qa" id="qaReveal"><span data-icon="external"></span>Reveal in Finder</button>
+      <button class="qa" id="qaReadme"><span data-icon="book"></span>View README</button>
+      <button class="qa danger" id="qaStopAll"><span data-icon="stop"></span>Stop All Agents</button>
+    </div>
+  </aside>
+</main>
+
+<dialog id="hire">
+  <form method="dialog" id="hireForm">
+    <h3>Add an agent</h3>
+    <label>Role</label>
+    <div class="roles" id="roleGrid"></div>
+    <label for="hName">Name</label>
+    <input id="hName" maxlength="24" required>
+    <label for="hProject">Project</label>
+    <div class="row-inline"><select id="hProject"></select><button type="button" class="btn" id="hManage">Projects…</button></div>
+    <div class="help">Agents on the same project share its folder.</div>
+    <label for="hMode">Permissions</label>
+    <select id="hMode">
+      <option value="plan">Plan — read and propose only (safest)</option>
+      <option value="acceptEdits">Edit — may create and edit files</option>
+    </select>
+    <label for="hAllowed">Allowed commands <span class="muted">(optional)</span></label>
+    <input id="hAllowed" placeholder="npm test, npm run build, git status">
+    <div class="help">Only commands starting with these may run. Anything else is refused.</div>
+    <div class="err" id="hErr"></div>
+    <div class="dlg-actions">
+      <button value="cancel" formnovalidate class="btn">Cancel</button>
+      <button class="btn primary" id="hOk" value="ok">Add agent</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="projects" class="wide">
+  <form method="dialog" id="projForm">
+    <h3>Projects</h3>
+    <p class="muted dlg-sub">A project is a folder your agents work in. Attach an existing repo or start an empty one.</p>
+    <div id="projList" class="proj-list"></div>
+    <div class="proj-add">
+      <div class="seg"><button type="button" class="seg-b sel" data-m="link">Attach existing folder</button><button type="button" class="seg-b" data-m="new">New empty project</button></div>
+      <div id="addLink">
+        <div class="browser">
+          <div class="crumbs"><button type="button" class="icon-btn sm" id="bUp" title="Up" data-icon="up"></button><code id="bPath">~</code></div>
+          <div class="dirs" id="bDirs"></div>
+        </div>
+        <div class="row-inline"><input id="pPath" placeholder="~/projects/my-app"><button type="button" class="btn primary" id="pAttach">Attach</button></div>
+        <div class="help">Folders with a <b>●</b> look like code projects (git, package.json, composer.json…).</div>
+      </div>
+      <div id="addNew" class="hidden">
+        <div class="row-inline"><input id="pNew" placeholder="my-new-app" pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]*"><button type="button" class="btn primary" id="pCreate">Create</button></div>
+        <div class="help" id="pNewHelp"></div>
+      </div>
+      <div class="err" id="pErr"></div>
+    </div>
+    <div class="dlg-actions"><button class="btn" value="ok">Done</button></div>
+  </form>
+</dialog>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h3>Settings</h3>
+    <div class="kv"><span>Workspaces</span><code id="setWs"></code></div>
+    <div class="kv"><span>Address</span><code id="setAddr"></code></div>
+    <div class="kv"><span>Network</span><span>127.0.0.1 only, token-protected</span></div>
+    <p class="muted">Agents run the official <code>claude</code> CLI inside their project folder. Shell commands only run when they match an agent's allowed list. Change the port or workspace folder with <code>OFFICE_PORT</code> / <code>OFFICE_WORKSPACES</code>.</p>
+    <div class="dlg-actions"><button class="btn primary" value="ok">Close</button></div>
+  </form>
+</dialog>
+
+<div id="toast"></div>
+<script>window.OFFICE_TOKEN = "__OFFICE_TOKEN__";</script>
+<script src="office.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

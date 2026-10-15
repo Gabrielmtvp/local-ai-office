@@ -1,0 +1,5 @@
+# your local data — never commit
+agents.json
+projects.json
+node_modules/
+.DS_Store
