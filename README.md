@@ -1,6 +1,16 @@
 # Local AI Office
 
-A pixel-art office where every character is a real Claude Code session on your Mac.
+A pixel-art office building where every character is a real **Claude Code** agent running on your own machine.
+Give an agent a task and it sits at its desk and works; when it's idle it wanders the building — coffee in the kitchen,
+ping-pong in the game room, a bench outside.
+
+![Agents walking around the building](docs/demo.gif)
+
+| The whole app | Zoomed into a project room |
+|---|---|
+| ![App with chat, editor and terminal](docs/app.png) | ![Agents in their rooms](docs/zoom.png) |
+| **Focus mode** — only the building | **Expanded conversation** |
+| ![The building with streets and parking](docs/building.png) | ![Large chat view](docs/chat.png) |
 
 ## Requirements
 - Node.js 18+ (`node --version`; install with `brew install node` if missing)
