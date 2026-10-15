@@ -15,6 +15,7 @@
   <div class="stats">
     <span class="machine"><i class="dot" id="connDot"></i><span id="hostName">Local Machine</span></span>
     <span>CPU <b id="sCpu">–</b></span><span>RAM <b id="sRam">–</b></span><span>Disk <b id="sDisk">–</b></span>
+    <button class="icon-btn" id="themeTop" title="Light / dark theme" data-icon="moon"></button>
     <button class="icon-btn" id="settingsTop" title="Settings" data-icon="gear"></button>
   </div>
 </header>
@@ -102,11 +103,21 @@
       <div class="panel-head">Project Info</div>
       <div class="proj-main"><span data-icon="folder" class="big"></span><div><b id="projName">—</b><div class="muted small-row" id="projStack"></div></div></div>
       <p class="muted proj-desc" id="projDesc">Select an agent to see its project.</p>
-      <div class="qa-title">Quick Actions</div>
-      <button class="qa" id="qaSwitch"><span data-icon="swap"></span>Switch project…</button>
-      <button class="qa" id="qaReveal"><span data-icon="external"></span>Reveal in Finder</button>
-      <button class="qa" id="qaReadme"><span data-icon="book"></span>View README</button>
-      <button class="qa danger" id="qaStopAll"><span data-icon="stop"></span>Stop All Agents</button>
+      <div class="sec">
+        <div class="sec-head"><span data-icon="team"></span>Team pipeline<span class="spacer"></span><button class="btn sm primary" id="plRun">Run</button></div>
+        <div id="plBox" class="pl-box muted">Architect plans → Developer builds → Tester checks.</div>
+      </div>
+      <div class="sec">
+        <div class="sec-head"><span data-icon="branch"></span><span id="gitLine">Git</span><span class="spacer"></span><button class="icon-btn sm" id="glSettings" title="GitLab settings" data-icon="gear"></button></div>
+        <div id="mrBox" class="mr-box"></div>
+        <button class="qa" id="mrOpen"><span data-icon="mr"></span>Open merge request…</button>
+      </div>
+      <div class="qa-row">
+        <button class="qa-mini" id="qaSwitch" title="Switch project"><span data-icon="swap"></span>Switch</button>
+        <button class="qa-mini" id="qaReveal" title="Reveal in Finder"><span data-icon="external"></span>Finder</button>
+        <button class="qa-mini" id="qaReadme" title="View README"><span data-icon="book"></span>README</button>
+        <button class="qa-mini danger" id="qaStopAll" title="Stop all agents"><span data-icon="stop"></span>Stop all</button>
+      </div>
     </div>
   </aside>
 </main>
@@ -162,12 +173,62 @@
   </form>
 </dialog>
 
+<dialog id="plDlg">
+  <form method="dialog" id="plForm">
+    <h3>Run a team pipeline</h3>
+    <p class="muted dlg-sub" id="plTeam"></p>
+    <label for="plGoal">What should the team do?</label>
+    <textarea id="plGoal" rows="4" placeholder="Add a discount code field to the checkout" required></textarea>
+    <label for="plRounds">If the Tester finds problems</label>
+    <select id="plRounds"><option value="1">Stop after the first test</option><option value="2" selected>Allow 1 round of fixes</option><option value="3">Allow 2 rounds of fixes</option></select>
+    <div class="help">Commands still need your OK unless they're on an agent's allowed list.</div>
+    <div class="err" id="plErr"></div>
+    <div class="dlg-actions"><button value="cancel" formnovalidate class="btn">Cancel</button><button class="btn primary" id="plStart" value="ok">Start</button></div>
+  </form>
+</dialog>
+
+<dialog id="mrDlg">
+  <form method="dialog" id="mrForm">
+    <h3>Open a merge request</h3>
+    <p class="muted dlg-sub" id="mrInfo"></p>
+    <label for="mrTitle">Title</label>
+    <input id="mrTitle" maxlength="200" required>
+    <label for="mrDesc">Description</label>
+    <textarea id="mrDesc" rows="4"></textarea>
+    <div class="help" id="mrFiles"></div>
+    <div class="err" id="mrErr"></div>
+    <div class="dlg-actions"><button value="cancel" formnovalidate class="btn">Cancel</button><button class="btn primary" id="mrGo" value="ok">Commit, push &amp; open MR</button></div>
+  </form>
+</dialog>
+
+<dialog id="glDlg">
+  <form method="dialog" id="glForm">
+    <h3>GitLab</h3>
+    <p class="muted dlg-sub">Used to open merge requests and show CI status. The token is stored only on this Mac (<code>secrets.json</code>) and is never shown again.</p>
+    <label for="glUrl">GitLab URL</label>
+    <input id="glUrl" placeholder="https://gitlab.com">
+    <label for="glPath">Project path</label>
+    <input id="glPath" placeholder="group/my-app">
+    <label for="glTarget">Target branch <span class="muted">(empty = the project's default)</span></label>
+    <input id="glTarget" placeholder="main">
+    <label for="glToken">Access token <span class="muted" id="glTokState"></span></label>
+    <input id="glToken" type="password" autocomplete="off" placeholder="glpat-… (scope: api)">
+    <label class="check"><input type="checkbox" id="glAuto"> Open a merge request automatically when a team pipeline passes</label>
+    <div class="err" id="glErr"></div>
+    <div class="dlg-actions"><button value="cancel" formnovalidate class="btn">Cancel</button><button class="btn primary" id="glSave" value="ok">Save</button></div>
+  </form>
+</dialog>
+
 <dialog id="settings">
   <form method="dialog">
     <h3>Settings</h3>
     <div class="kv"><span>Workspaces</span><code id="setWs"></code></div>
     <div class="kv"><span>Address</span><code id="setAddr"></code></div>
     <div class="kv"><span>Network</span><span>127.0.0.1 only, token-protected</span></div>
+    <label for="setTheme">Theme</label>
+    <select id="setTheme"><option value="dark">Dark</option><option value="light">Light</option></select>
+    <label for="setSky">Building</label>
+    <select id="setSky"><option value="theme">Match the theme (dark = night, light = day)</option><option value="auto">Follow your clock (night 19:00–07:00)</option><option value="day">Always day</option><option value="night">Always night</option></select>
     <p class="muted">Agents run the official <code>claude</code> CLI inside their project folder. Shell commands only run when they match an agent's allowed list. Change the port or workspace folder with <code>OFFICE_PORT</code> / <code>OFFICE_WORKSPACES</code>.</p>
     <div class="dlg-actions"><button class="btn primary" value="ok">Close</button></div>
   </form>

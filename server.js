@@ -48,6 +48,8 @@ const PROJECTS_FILE = path.join(__dirname, 'projects.json');
 const HOME = fs.realpathSync(os.homedir());
 const PUBLIC = path.join(__dirname, 'public');
 const TOKEN = crypto.randomBytes(24).toString('hex'); // new on every start
+const INTERNAL_TOKEN = crypto.randomBytes(24).toString('hex'); // only for the approval helper (perm-mcp.js)
+const SECRETS_FILE = path.join(__dirname, 'secrets.json'); // local GitLab tokens, never sent to the browser
 const MODES = ['plan', 'acceptEdits']; // never bypassPermissions
 const MAX_AGENTS = 40;       // whole building
 const DESKS_PER_ROOM = 8;    // each project room has 8 desks
@@ -152,7 +154,8 @@ function publicAgent(a) {
   const act = lastActivity(a);
   const p = projects[a.project] || { name: '(no project)', path: '' };
   return { id: a.id, name: a.name, role: a.role, project: a.project, folder: p.name, projectPath: p.path, mode: a.mode, status: a.status, desk: a.desk,
-    sessionId: a.sessionId, cost: a.cost || 0, allowed: a.allowed, activity: act.text, lastAt: act.t };
+    sessionId: a.sessionId, cost: a.cost || 0, allowed: a.allowed, activity: act.text, lastAt: act.t,
+    asking: pendingFor(a.id), pipeline: a.pipelineStep || null };
 }
 function broadcast(evt) {
   const data = `data: ${JSON.stringify(evt)}\n\n`;
@@ -304,31 +307,41 @@ function listTree(root, rel = '', depth = 0, counter = { n: 0 }) {
 }
 
 // ---------- run Claude Code ----------
-function runTask(a, text) {
+// Runs one Claude Code turn for an agent. Resolves with { ok, result } when the process ends.
+function runTask(a, text, opts = {}) {
+  return new Promise(resolve => runTaskInner(a, text, opts, resolve));
+}
+function runTaskInner(a, text, opts, done) {
   let cwd;
-  try { cwd = projectDir(a); } catch (e) { addLog(a, { kind: 'user', text }); addLog(a, { kind: 'error', text: e.message }); return setStatus(a, 'error'); }
-  const args = ['-p', text, '--output-format', 'stream-json', '--verbose', '--permission-mode', a.mode];
+  try { cwd = projectDir(a); } catch (e) { addLog(a, { kind: 'user', text, from: opts.from }); addLog(a, { kind: 'error', text: e.message }); setStatus(a, 'error'); return done({ ok: false, result: e.message }); }
+  const args = ['-p', text, '--output-format', 'stream-json', '--verbose', '--permission-mode', opts.mode || a.mode];
   if (a.sessionId) args.push('--resume', a.sessionId);
   const rolePrompt = (ROLES[a.role] || ROLES.custom).prompt;
   if (rolePrompt) args.push('--append-system-prompt', `${rolePrompt} Your name is ${a.name}.`);
-  if (a.allowed && a.allowed.length) args.push('--allowedTools', ...a.allowed.map(c => `Bash(${c}:*)`));
+  // Anything not auto-allowed is sent to you as an Allow / Deny bubble in the office.
+  const mcp = { mcpServers: { office: { command: process.execPath, args: [path.join(__dirname, 'perm-mcp.js')],
+    env: { OFFICE_URL: `http://127.0.0.1:${PORT}`, OFFICE_INTERNAL_TOKEN: INTERNAL_TOKEN, OFFICE_AGENT_ID: a.id } } } };
+  args.push('--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__office__approve');
+  const allow = (a.allowed || []).map(c => /^[A-Z][A-Za-z]+$/.test(c) ? c : `Bash(${c}:*)`);
+  if (allow.length) args.push('--allowedTools', ...allow);
 
-  addLog(a, { kind: 'user', text });
+  addLog(a, { kind: 'user', text, from: opts.from });
   setStatus(a, 'working');
+  a._result = '';
 
   let child;
   try {
     if (!CLAUDE.bin) CLAUDE = findClaude(); // maybe installed since start
     if (!CLAUDE.bin) {
       addLog(a, { kind: 'error', text: 'Could not find Claude Code. In Terminal run:  which claude  — then start the office with:\nCLAUDE_BIN=/path/from/which node server.js' });
-      return setStatus(a, 'error');
+      setStatus(a, 'error'); return done({ ok: false, result: 'Claude Code not found' });
     }
     // Make sure child processes (claude itself spawns node, git, etc.) see the same tools as your shell.
     const env = { ...process.env, PATH: [path.dirname(CLAUDE.bin), process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'].filter(Boolean).join(path.delimiter) };
     child = spawn(CLAUDE.bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     addLog(a, { kind: 'error', text: `Could not start Claude Code: ${e.message}` });
-    return setStatus(a, 'error');
+    setStatus(a, 'error'); return done({ ok: false, result: e.message });
   }
   procs[a.id] = child;
   let buf = '', stderr = '', gotResult = false;
@@ -349,12 +362,16 @@ function runTask(a, text) {
   });
   child.on('close', (code, signal) => {
     delete procs[a.id];
-    if (signal) { addLog(a, { kind: 'system', text: 'Task stopped.' }); setStatus(a, 'idle'); }
+    denyPendingFor(a.id, 'The task ended.');
+    let ok = true;
+    if (signal) { addLog(a, { kind: 'system', text: 'Task stopped.' }); setStatus(a, 'idle'); ok = false; }
     else if (code !== 0 && !gotResult) {
       addLog(a, { kind: 'error', text: (stderr.trim() || `Claude Code exited with code ${code}`).slice(-1500) });
-      setStatus(a, 'error');
+      setStatus(a, 'error'); ok = false;
     } else if (a.status === 'working') setStatus(a, 'waiting');
+    if (a.status === 'error') ok = false;
     save();
+    done({ ok, result: a._result || lastAssistantText(a) });
   });
 }
 
@@ -378,6 +395,7 @@ function handleEvent(a, ev, markResult) {
     }
   } else if (ev.type === 'result') {
     markResult();
+    if (typeof ev.result === 'string') a._result = ev.result;
     if (typeof ev.total_cost_usd === 'number') a.cost = (a.cost || 0) + ev.total_cost_usd;
     if (ev.session_id) a.sessionId = ev.session_id;
     if (ev.is_error) { addLog(a, { kind: 'error', text: ev.result || ev.subtype || 'Task failed' }); setStatus(a, 'error'); }
@@ -388,6 +406,208 @@ function handleEvent(a, ev, markResult) {
     }
   }
 }
+
+
+// ---------- approvals (Allow / Deny bubbles) ----------
+const approvals = new Map(); // id -> { id, agentId, tool, summary, detail, t, resolve }
+function summarizeRequest(tool, input) {
+  input = input || {};
+  if (tool === 'Bash') return { summary: String(input.command || '').slice(0, 300), detail: input.description || '' };
+  const target = input.file_path || input.notebook_path || input.path || input.url || input.pattern || input.query || '';
+  return { summary: `${tool}${target ? ': ' + String(target).slice(0, 200) : ''}`, detail: '' };
+}
+function pendingFor(agentId) {
+  for (const ap of approvals.values()) if (ap.agentId === agentId) return { id: ap.id, tool: ap.tool, summary: ap.summary, detail: ap.detail, t: ap.t };
+  return null;
+}
+function resolveApproval(ap, behavior, message, how) {
+  if (!approvals.has(ap.id)) return;
+  approvals.delete(ap.id);
+  ap.resolve(behavior === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: message || 'Denied in AI Office.' });
+  const a = agents[ap.agentId];
+  if (a) {
+    addLog(a, { kind: behavior === 'allow' ? 'approved' : 'rejected', text: `${how || (behavior === 'allow' ? 'Allowed' : 'Denied')}: ${ap.summary}` });
+    broadcast({ type: 'agent', agent: publicAgent(a) });
+  }
+  broadcast({ type: 'approval-done', id: ap.id, agentId: ap.agentId, behavior });
+}
+function denyPendingFor(agentId, message) { for (const ap of [...approvals.values()]) if (ap.agentId === agentId) resolveApproval(ap, 'deny', message, 'Cancelled'); }
+function allowedPrefixFor(ap) {
+  if (ap.tool !== 'Bash') return ap.tool;
+  const words = ap.summary.trim().split(/\s+/).filter(w => /^[A-Za-z0-9._\-\/:=@]+$/.test(w));
+  return words.slice(0, words[0] && /^(npm|pnpm|yarn|composer|php|git|docker|make|bundle|go|cargo|python3?|pytest|npx|vendor\/bin\/\S+|\.\/vendor\/bin\/\S+)$/.test(words[0]) ? 2 : 1).join(' ');
+}
+function handleInternalApproval(req, res) {
+  if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) return json(res, 401, { behavior: 'deny', message: 'bad token' });
+  readBody(req).then(b => {
+    const a = agents[b.agentId];
+    if (!a) return json(res, 200, { behavior: 'deny', message: 'Unknown agent.' });
+    const id = crypto.randomUUID();
+    const { summary, detail } = summarizeRequest(b.tool, b.input);
+    const ap = { id, agentId: a.id, tool: String(b.tool || 'tool'), summary, detail, t: Date.now(), resolve: (decision) => json(res, 200, decision) };
+    approvals.set(id, ap);
+    req.on('close', () => { if (approvals.has(id)) { approvals.delete(id); broadcast({ type: 'approval-done', id, agentId: a.id, behavior: 'deny' }); } });
+    addLog(a, { kind: 'ask', text: summary, tool: ap.tool, approvalId: id });
+    broadcast({ type: 'approval', approval: { id, agentId: a.id, tool: ap.tool, summary, detail, t: ap.t } });
+    broadcast({ type: 'agent', agent: publicAgent(a) });
+  }).catch(e => json(res, 400, { behavior: 'deny', message: e.message }));
+}
+function lastAssistantText(a) {
+  for (let i = a.log.length - 1; i >= 0; i--) if (a.log[i].kind === 'assistant') return a.log[i].text;
+  return '';
+}
+
+// ---------- team pipelines: Architect -> Developer -> Tester ----------
+const pipelines = {}; // id -> pipeline
+let activePipelineByProject = {};
+function publicPipeline(pl) { return { id: pl.id, projectId: pl.projectId, goal: pl.goal, status: pl.status, round: pl.round, steps: pl.steps, startedAt: pl.startedAt, endedAt: pl.endedAt, verdict: pl.verdict }; }
+function plUpdate(pl) { broadcast({ type: 'pipeline', pipeline: publicPipeline(pl) }); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function handoff(pl, from, to, label) {
+  if (!from || !to || from.id === to.id) return;
+  broadcast({ type: 'handoff', from: from.id, to: to.id, label });
+  addLog(to, { kind: 'system', text: `${from.name} handed over: ${label}` });
+  await sleep(6500); // time for the walk to the other desk
+}
+async function runPipeline(pl) {
+  const team = Object.values(agents).filter(a => a.project === pl.projectId);
+  const pick = role => team.find(a => a.role === role);
+  const architect = pick('architect'), developer = pick('developer') || team.find(a => a.role === 'custom'), tester = pick('tester');
+  const step = (role, agent, round) => { const st = { role, agentId: agent.id, name: agent.name, status: 'working', round, startedAt: Date.now() }; pl.steps.push(st); agent.pipelineStep = role; plUpdate(pl); return st; };
+  const finish = (st, ok) => { st.status = ok ? 'done' : 'failed'; st.endedAt = Date.now(); const a = agents[st.agentId]; if (a) a.pipelineStep = null; plUpdate(pl); };
+  const stopped = () => pl.status === 'stopped';
+  try {
+    let plan = '';
+    if (architect) {
+      const st = step('Plan', architect, 0);
+      const r = await runTask(architect, `Team goal: ${pl.goal}\n\nWrite a short, concrete implementation plan for the Developer (${developer.name}): which files to change, the steps, and how to test it. Do not edit any files.`, { mode: 'plan', from: 'Team pipeline' });
+      finish(st, r.ok); if (!r.ok || stopped()) throw new Error(stopped() ? 'stopped' : 'The Architect could not finish the plan.');
+      plan = r.result; await handoff(pl, architect, developer, 'Plan');
+    }
+    let report = '', passed = false;
+    for (let round = 1; round <= pl.maxRounds && !passed; round++) {
+      pl.round = round;
+      const st = step(round === 1 ? 'Build' : 'Fix', developer, round);
+      const prompt = round === 1
+        ? `Team goal: ${pl.goal}\n\n${plan ? `Plan from ${architect.name} (Architect):\n${plan}\n\n` : ''}Implement it. When you are done, summarise what you changed.`
+        : `${tester.name} (Tester) found problems:\n${report}\n\nFix them, then summarise what you changed.`;
+      const r = await runTask(developer, prompt, { from: round === 1 ? (architect ? `${architect.name} (Architect)` : 'Team pipeline') : `${tester.name} (Tester)` });
+      finish(st, r.ok); if (!r.ok || stopped()) throw new Error(stopped() ? 'stopped' : 'The Developer could not finish.');
+      if (!tester) { passed = true; pl.verdict = 'Done (no Tester in this room)'; break; }
+      await handoff(pl, developer, tester, round === 1 ? 'Work to test' : 'Fixes to re-test');
+      const st2 = step('Test', tester, round);
+      const t = await runTask(tester, `Team goal: ${pl.goal}\n\n${developer.name} (Developer) reports:\n${r.result}\n\nVerify the work: review the changes and run the tests you are allowed to run. End your reply with exactly one line: "VERDICT: PASS" or "VERDICT: FAIL - <short reason>".`, { from: `${developer.name} (Developer)` });
+      finish(st2, t.ok); if (!t.ok || stopped()) throw new Error(stopped() ? 'stopped' : 'The Tester could not finish.');
+      const m = /VERDICT:\s*(PASS|FAIL)\b[^\n]*/i.exec(t.result || '');
+      passed = !!m && m[1].toUpperCase() === 'PASS';
+      pl.verdict = m ? m[0].trim() : 'No verdict given';
+      report = t.result;
+      if (!passed && round < pl.maxRounds) await handoff(pl, tester, developer, 'Bug report');
+    }
+    pl.status = passed ? 'passed' : 'failed';
+    const proj = projects[pl.projectId];
+    if (passed && proj && proj.gitlab && proj.gitlab.autoMR) {
+      try { await openMergeRequest(proj, { agent: developer, title: pl.goal, description: `Goal: ${pl.goal}\n\n${pl.verdict}` }); }
+      catch (e) { pl.mrError = e.message; addLog(developer, { kind: 'error', text: 'Merge request: ' + e.message }); }
+    }
+  } catch (e) {
+    if (pl.status !== 'stopped') { pl.status = 'failed'; pl.verdict = e.message; }
+  } finally {
+    pl.endedAt = Date.now();
+    for (const a of Object.values(agents)) if (a.project === pl.projectId) a.pipelineStep = null;
+    delete activePipelineByProject[pl.projectId];
+    plUpdate(pl); save();
+  }
+}
+
+// ---------- git + GitLab merge requests ----------
+let secrets = {};
+try { secrets = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8')); } catch { /* none yet */ }
+function saveSecrets() { fs.writeFileSync(SECRETS_FILE, JSON.stringify(secrets, null, 2), { mode: 0o600 }); try { fs.chmodSync(SECRETS_FILE, 0o600); } catch { /* windows */ } }
+function git(dir, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd: dir, timeout: opts.timeout || 60000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+      if (err) reject(new Error((stderr || err.message).trim().split('\n').slice(-3).join(' '))); else resolve(stdout.trim());
+    });
+  });
+}
+function parseRemote(url) {
+  if (!url) return null;
+  let m = url.match(/^git@([^:]+):(.+?)(\.git)?$/) || url.match(/^ssh:\/\/git@([^/:]+)(?::\d+)?\/(.+?)(\.git)?$/) || url.match(/^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(\.git)?$/);
+  return m ? { host: m[1], path: m[2] } : null;
+}
+async function gitInfo(proj) {
+  const dir = proj.path;
+  const out = { isRepo: fs.existsSync(path.join(dir, '.git')), branch: null, remote: null, changes: 0, files: [] };
+  if (!out.isRepo) return out;
+  try { out.branch = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']); } catch { /* new repo */ }
+  try { out.remote = await git(dir, ['remote', 'get-url', 'origin']); } catch { /* no remote */ }
+  try { const st = await git(dir, ['status', '--porcelain']); out.files = st ? st.split('\n').map(l => l.slice(3)).slice(0, 50) : []; out.changes = st ? st.split('\n').length : 0; } catch { /* ignore */ }
+  const r = parseRemote(out.remote);
+  const g = proj.gitlab || {};
+  out.gitlab = {
+    url: g.url || (r ? `https://${r.host}` : ''), path: g.path || (r ? r.path : ''), target: g.target || '',
+    autoMR: !!g.autoMR, hasToken: !!(secrets.gitlab && secrets.gitlab[(g.url || (r ? `https://${r.host}` : '')).replace(/\/$/, '')]),
+  };
+  out.mr = proj.mr || null;
+  return out;
+}
+async function gitlabApi(proj, method, apiPath, body) {
+  const info = await gitInfo(proj);
+  const base = info.gitlab.url.replace(/\/$/, '');
+  if (!base) throw new Error('Set the GitLab URL for this project first.');
+  const token = secrets.gitlab && secrets.gitlab[base];
+  if (!token) throw new Error(`Add a GitLab access token for ${base} (Project Info → GitLab).`);
+  const res = await fetch(`${base}/api/v4${apiPath}`, { method, headers: { 'PRIVATE-TOKEN': token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text(); let data; try { data = JSON.parse(text); } catch { data = { message: text.slice(0, 200) }; }
+  if (!res.ok) { const err = new Error(`GitLab ${res.status}: ${typeof data.message === 'string' ? data.message : JSON.stringify(data.message || data.error)}`); err.status = res.status; err.data = data; throw err; }
+  return data;
+}
+const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'changes';
+async function openMergeRequest(proj, { agent, title, description }) {
+  const dir = proj.path, info = await gitInfo(proj);
+  if (!info.isRepo) throw new Error('This project is not a git repository.');
+  if (!info.remote) throw new Error('This repository has no "origin" remote.');
+  if (!info.gitlab.path) throw new Error('Could not work out the GitLab project path. Set it in Project Info → GitLab.');
+  const enc = encodeURIComponent(info.gitlab.path);
+  let target = info.gitlab.target;
+  if (!target) { const p = await gitlabApi(proj, 'GET', `/projects/${enc}`); target = p.default_branch || 'main'; }
+  let branch = info.branch;
+  if (!branch || branch === 'HEAD' || branch === target) {
+    branch = `ai-office/${slug(title)}-${Date.now().toString(36).slice(-4)}`;
+    await git(dir, ['checkout', '-b', branch]);
+  }
+  if (info.changes) {
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', title.slice(0, 72), '-m', `${description || ''}\n\nMade with AI Office${agent ? ` by ${agent.name} (${agent.role})` : ''}.`]);
+  }
+  await git(dir, ['push', '-u', 'origin', branch], { timeout: 120000 });
+  let mr;
+  try {
+    mr = await gitlabApi(proj, 'POST', `/projects/${enc}/merge_requests`, { source_branch: branch, target_branch: target, title, description: description || title, remove_source_branch: true });
+  } catch (e) {
+    if (e.status !== 409) throw e;
+    const list = await gitlabApi(proj, 'GET', `/projects/${enc}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`);
+    if (!list.length) throw e; mr = list[0];
+  }
+  proj.mr = { iid: mr.iid, url: mr.web_url, title: mr.title, branch, target, agentId: agent ? agent.id : null, state: mr.state, ci: (mr.head_pipeline && mr.head_pipeline.status) || 'pending', at: Date.now() };
+  saveProjects();
+  if (agent) addLog(agent, { kind: 'system', text: `Opened merge request !${mr.iid}: ${mr.web_url}` });
+  broadcast({ type: 'git', projectId: proj.id, mr: proj.mr });
+  return proj.mr;
+}
+async function pollMergeRequests() {
+  for (const proj of Object.values(projects)) {
+    const mr = proj.mr; if (!mr || mr.state === 'merged' || mr.state === 'closed') continue;
+    try {
+      const info = await gitInfo(proj);
+      const data = await gitlabApi(proj, 'GET', `/projects/${encodeURIComponent(info.gitlab.path)}/merge_requests/${mr.iid}`);
+      const ci = (data.head_pipeline && data.head_pipeline.status) || (data.pipeline && data.pipeline.status) || mr.ci;
+      if (ci !== mr.ci || data.state !== mr.state) { mr.ci = ci; mr.state = data.state; saveProjects(); broadcast({ type: 'git', projectId: proj.id, mr }); }
+    } catch { /* offline or token issue: try again later */ }
+  }
+}
+setInterval(pollMergeRequests, Number(process.env.OFFICE_CI_POLL_MS || 30000)).unref();
 
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml' };
@@ -445,6 +665,38 @@ async function api(req, res, url) {
       save(); broadcast({ type: 'projects' });
       return json(res, 200, { ok: true });
     }
+    if (pm[2] === '/pipeline' && req.method === 'POST') {
+      const b = await readBody(req);
+      const goal = String(b.goal || '').trim().slice(0, 2000);
+      if (!goal) return json(res, 400, { error: 'Describe the goal for the team.' });
+      if (activePipelineByProject[pr.id]) return json(res, 409, { error: 'A pipeline is already running in this room.' });
+      const team = Object.values(agents).filter(a => a.project === pr.id);
+      if (!team.some(a => a.role === 'developer' || a.role === 'custom')) return json(res, 400, { error: 'This room needs a Developer (or a Custom agent) to run a pipeline.' });
+      if (team.some(a => procs[a.id])) return json(res, 409, { error: 'Someone in this room is still working. Wait or stop them first.' });
+      const pl = { id: crypto.randomUUID(), projectId: pr.id, goal, status: 'running', round: 0, maxRounds: Math.max(1, Math.min(3, Number(b.maxRounds) || 2)), steps: [], startedAt: Date.now() };
+      pipelines[pl.id] = pl; activePipelineByProject[pr.id] = pl.id;
+      plUpdate(pl); runPipeline(pl);
+      return json(res, 202, publicPipeline(pl));
+    }
+    if (pm[2] === '/git' && req.method === 'GET') return json(res, 200, await gitInfo(pr));
+    if (pm[2] === '/gitlab' && req.method === 'POST') {
+      const b = await readBody(req);
+      const url = String(b.url || '').trim().replace(/\/$/, '');
+      if (url && !/^https?:\/\/[A-Za-z0-9.\-:]+$/.test(url)) return json(res, 400, { error: 'GitLab URL should look like https://gitlab.com' });
+      pr.gitlab = { url, path: String(b.path || '').trim().replace(/^\/|\.git$/g, ''), target: String(b.target || '').trim(), autoMR: !!b.autoMR };
+      if (b.token) { secrets.gitlab = secrets.gitlab || {}; secrets.gitlab[url || (await gitInfo(pr)).gitlab.url] = String(b.token).trim(); saveSecrets(); }
+      saveProjects(); broadcast({ type: 'git', projectId: pr.id, mr: pr.mr || null });
+      return json(res, 200, await gitInfo(pr));
+    }
+    if (pm[2] === '/merge-request' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (Object.values(agents).some(a => a.project === pr.id && procs[a.id])) return json(res, 409, { error: 'Wait until the agents in this room finish.' });
+      const agent = agents[b.agentId] && agents[b.agentId].project === pr.id ? agents[b.agentId] : null;
+      const title = String(b.title || '').trim().slice(0, 200);
+      if (!title) return json(res, 400, { error: 'Give the merge request a title.' });
+      try { return json(res, 200, await openMergeRequest(pr, { agent, title, description: String(b.description || '').slice(0, 5000) })); }
+      catch (e) { return json(res, 400, { error: e.message }); }
+    }
     if (pm[2] === '/settings' && req.method === 'POST') {
       const b = await readBody(req);
       if (b.theme && ROOM_THEMES.includes(b.theme)) pr.theme = b.theme;
@@ -454,6 +706,26 @@ async function api(req, res, url) {
       return json(res, 200, pr);
     }
     return json(res, 404, { error: 'Not found' });
+  }
+  if (p === '/api/approvals' && req.method === 'GET') return json(res, 200, [...approvals.values()].map(ap => ({ id: ap.id, agentId: ap.agentId, tool: ap.tool, summary: ap.summary, detail: ap.detail, t: ap.t })));
+  const am = p.match(/^\/api\/approvals\/([0-9a-f-]{36})$/);
+  if (am && req.method === 'POST') {
+    const ap = approvals.get(am[1]); if (!ap) return json(res, 404, { error: 'This request was already answered.' });
+    const b = await readBody(req);
+    if (b.decision === 'always') {
+      const a = agents[ap.agentId]; const prefix = allowedPrefixFor(ap);
+      if (a && prefix && !a.allowed.includes(prefix)) { a.allowed = parseAllowed([...a.allowed, prefix]); save(); broadcast({ type: 'agent', agent: publicAgent(a) }); }
+      resolveApproval(ap, 'allow', null, prefix ? `Always allowed "${prefix}"` : 'Allowed');
+    } else resolveApproval(ap, b.decision === 'allow' ? 'allow' : 'deny', b.message, null);
+    return json(res, 200, { ok: true });
+  }
+  if (p === '/api/pipelines' && req.method === 'GET') return json(res, 200, Object.values(pipelines).sort((x, y) => y.startedAt - x.startedAt).slice(0, 20).map(publicPipeline));
+  const plm = p.match(/^\/api\/pipelines\/([0-9a-f-]{36})\/stop$/);
+  if (plm && req.method === 'POST') {
+    const pl = pipelines[plm[1]]; if (!pl) return json(res, 404, { error: 'No such pipeline' });
+    pl.status = 'stopped'; pl.verdict = 'Stopped by you';
+    for (const a of Object.values(agents)) if (a.project === pl.projectId && procs[a.id]) { denyPendingFor(a.id, 'Pipeline stopped.'); procs[a.id].kill('SIGTERM'); }
+    plUpdate(pl); return json(res, 200, { ok: true });
   }
   if (p === '/api/stop-all' && req.method === 'POST') { for (const c of Object.values(procs)) c.kill('SIGTERM'); return json(res, 200, { ok: true }); }
   if (p === '/api/agents' && req.method === 'POST') {
@@ -499,7 +771,7 @@ async function api(req, res, url) {
     runTask(a, text);
     return json(res, 202, { ok: true });
   }
-  if (action === '/stop' && req.method === 'POST') { if (procs[a.id]) procs[a.id].kill('SIGTERM'); return json(res, 200, { ok: true }); }
+  if (action === '/stop' && req.method === 'POST') { denyPendingFor(a.id, 'Stopped by you.'); if (procs[a.id]) procs[a.id].kill('SIGTERM'); return json(res, 200, { ok: true }); }
   if (action === '/settings' && req.method === 'POST') {
     const b = await readBody(req);
     if (b.mode && MODES.includes(b.mode)) a.mode = b.mode;
@@ -550,6 +822,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${host}`);
   const p = url.pathname;
 
+  if (p === '/internal/approval' && req.method === 'POST') return handleInternalApproval(req, res);
   if (p.startsWith('/api/')) {
     const tok = req.headers['x-office-token'] || url.searchParams.get('token');
     if (tok !== TOKEN) return json(res, 401, { error: 'Bad token — reload the page.' });
@@ -571,6 +844,7 @@ const server = http.createServer(async (req, res) => {
   res.end(body);
 });
 
+server.requestTimeout = 0; server.headersTimeout = 60000; server.timeout = 0; // approval requests can wait for you
 server.listen(PORT, HOST, () => {
   console.log(`\n  🏢  AI Office is open at  http://127.0.0.1:${PORT}`);
   console.log(`  📁  Agent workspaces live in    ${WORKSPACES}`);

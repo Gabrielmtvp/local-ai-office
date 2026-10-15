@@ -35,6 +35,11 @@
     zoomin: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/>',
     zoomout: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M8 11h6"/>',
     fit: '<path d="M3 12l9-8 9 8-9 8z"/>',
+    moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    team: '<circle cx="6" cy="8" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="12" cy="16" r="2.5"/><path d="M8.3 9.5l2.2 4.5M15.7 9.5l-2.2 4.5M8.5 8h7"/>',
+    branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 5-6 3-10 7"/>',
+    mr: '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4M13 4l-2 2 2 2"/>',
   };
   const icon = n => `<svg viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
   const paintIcons = (root = document) => root.querySelectorAll('[data-icon]').forEach(el => { if (!el.dataset.painted) { el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon)); el.dataset.painted = 1; } });
@@ -50,6 +55,10 @@
 
   const STATUS_TEXT = { idle: 'Idle', working: 'Working', waiting: 'Waiting for you', error: 'Needs attention' };
   function activityText(a) {
+    if (a.asking) return 'Needs your OK: ' + a.asking.summary;
+    const carrying = office && office.activity(a);
+    if (carrying && /^(Bringing|Handing)/.test(carrying)) return carrying;
+    if (a.status === 'working' && a.pipeline) return `${a.pipeline} · ` + (a.activity ? a.activity.replace(/^(\w+): /, '') : 'thinking…');
     if (a.status === 'working') return a.activity ? a.activity.replace(/^(\w+): /, (m, t) => ({ Read: 'Reading ', Edit: 'Editing ', Write: 'Writing ', Bash: 'Running ', Glob: 'Searching ', Grep: 'Searching ', WebFetch: 'Reading ', WebSearch: 'Searching ' }[t] || t + ': ')) : 'Thinking…';
     if (a.status === 'waiting') return 'Waiting for you';
     if (a.status === 'error') return 'Needs attention';
@@ -89,6 +98,7 @@
     office = Office.createWorld(src, { rooms: defs });
     office.onFrame(renderView);
     office.setWander(viewState.wander);
+    office.setNight(isNight());
     syncWorldAgents();
     const box = $('labels'); box.querySelectorAll('.rsign').forEach(el => el.remove()); roomSigns.clear();
     for (const r of office.rooms) {
@@ -101,8 +111,11 @@
   }
   function syncWorldAgents() {
     if (!office) return;
-    office.setAgents([...agents.values()].map(a => ({ ...a, room: a.project })));
+    office.setAgents([...agents.values()].map(a => ({ ...a, room: a.project, status: a.asking ? 'asking' : a.status })));
     office.setSelected(selected);
+    const badges = {};
+    for (const p of projects) if (p.mr && p.mr.agentId && p.mr.state !== 'closed') badges[p.mr.agentId] = p.mr.state === 'merged' ? 'merged' : (p.mr.ci || 'pending');
+    office.setBadges(badges);
   }
   function fitCalc() {
     const b = office.buildingBounds(), w = view.clientWidth || 800, h = view.clientHeight || 500;
@@ -175,14 +188,17 @@
   });
   view.addEventListener('wheel', e => { e.preventDefault(); const r = view.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015))); }, { passive: false });
 
-  const labelEls = new Map();
+  const labelEls = new Map(); let labelKey = '';
   function renderLabels() {
+    const key = [...agents.values()].map(a => a.id + a.name + a.role + a.desk + (a.id === selected)).join('|');
+    if (key === labelKey) { syncWorldAgents(); return; }
+    labelKey = key;
     const box = $('labels'); labelEls.forEach(el => el.remove()); labelEls.clear();
     for (const a of agents.values()) {
       const el = document.createElement('div');
       el.className = 'olabel' + (a.id === selected ? ' sel' : '');
-      el.innerHTML = `<div class="t"><img class="role-ico" src="${avatarFor(a)}" alt="">${esc(a.name)}</div><div class="s"><i class="dot ${a.status}"></i><span></span></div>`;
-      el.onclick = () => select(a.id);
+      el.innerHTML = `<div class="t"><img class="role-ico" src="${avatarFor(a)}" alt="">${esc(a.name)}</div><div class="s"><i class="dot ${a.status}"></i><span></span></div><div class="ask"></div>`;
+      el.onclick = (e) => { if (!e.target.closest('[data-decide]')) select(a.id); };
       box.appendChild(el); labelEls.set(a.id, el);
     }
     syncWorldAgents();
@@ -193,12 +209,19 @@
     for (const [id, el] of labelEls) {
       const a = agents.get(id); if (!a) continue;
       const p = office.labelPoint({ ...a, room: a.project });
-      const show = p && (zoomed || id === selected);
+      const show = p && (zoomed || id === selected || !!a.asking);
       el.style.display = show ? '' : 'none'; if (!show) continue;
       const [x, y] = toScreen(p.x, p.y);
       el.style.left = x.toFixed(1) + 'px'; el.style.top = y.toFixed(1) + 'px';
-      const txt = shortStatus(a), span = el.querySelector('.s span');
+      const txt = a.asking ? 'Needs your OK' : shortStatus(a), span = el.querySelector('.s span');
       if (span.textContent !== txt) span.textContent = txt;
+      const dot = el.querySelector('.s .dot'), st = a.asking ? 'asking' : a.status;
+      if (dot.className !== 'dot ' + st) dot.className = 'dot ' + st;
+      const askId = a.asking ? a.asking.id : '';
+      if (el._ask !== askId) {
+        el._ask = askId; el.classList.toggle('asking', !!askId);
+        el.querySelector('.ask').innerHTML = askId ? `<code>${esc(a.asking.summary.slice(0, 160))}</code>${askButtons(askId, true)}` : '';
+      }
     }
     for (const { el, r } of roomSigns.values()) {
       el.style.display = zoomed ? 'none' : '';
@@ -224,7 +247,7 @@
     [...agents.values()].sort((x, y) => x.desk - y.desk).forEach(a => {
       const row = document.createElement('div');
       row.className = 'agent-row' + (a.id === selected ? ' sel' : '');
-      row.innerHTML = `<div class="av-wrap"><img class="avatar" src="${avatarFor(a)}" alt=""><i class="dot ${a.status}"></i></div>
+      row.innerHTML = `<div class="av-wrap"><img class="avatar" src="${avatarFor(a)}" alt=""><i class="dot ${a.asking ? 'asking' : a.status}"></i></div>
         <div><div class="nm">${esc(a.name)}</div><div class="act">${esc(activityText(a))}</div><div class="ago">${esc(ago(a.lastAt))}</div></div>`;
       row.onclick = () => select(a.id);
       list.appendChild(row);
@@ -235,7 +258,8 @@
     const errors = [...agents.values()].filter(a => a.status === 'error').length;
     $('sysCard').classList.toggle('off', !connected);
     $('connDot').classList.toggle('on', connected);
-    $('sysTitle').textContent = !connected ? 'Bridge offline' : errors ? `${errors} agent${errors > 1 ? 's' : ''} need attention` : 'All systems running';
+    const asking = [...agents.values()].filter(a => a.asking).length;
+    $('sysTitle').textContent = !connected ? 'Bridge offline' : asking ? `${asking} request${asking > 1 ? 's' : ''} waiting for your OK` : errors ? `${errors} agent${errors > 1 ? 's' : ''} need attention` : 'All systems running';
     $('sysSub').textContent = !connected ? 'Is server.js still running?' : working ? `${working} agent${working > 1 ? 's' : ''} working` : 'Your AI office is ready!';
     $('sysPill').textContent = connected ? 'Online' : 'Offline';
   }
@@ -310,20 +334,35 @@
     };
     const visible = entries.filter(e => e.kind !== 'output');
     visible.forEach((e, idx) => {
-      if (e.kind === 'user') { flush(); html += `<div class="m"><div class="ico you">${icon('user')}</div><div class="body"><div class="who">You<span class="time">${hhmm(e.t)}</span></div><div class="txt">${esc(e.text)}</div></div></div>`; return; }
+      if (e.kind === 'user') {
+        flush();
+        const fromA = e.from && [...agents.values()].find(x => e.from.startsWith(x.name));
+        const ico = fromA ? `<img class="ico" src="${avatarFor(fromA)}" alt="">` : e.from ? `<div class="ico you">${icon('team')}</div>` : `<div class="ico you">${icon('user')}</div>`;
+        html += `<div class="m">${ico}<div class="body"><div class="who">${e.from ? `<span>${esc(e.from)} <span class="from">handed over</span></span>` : 'You'}<span class="time">${hhmm(e.t)}</span></div><div class="txt">${md(e.text)}</div></div></div>`; return;
+      }
+      if (e.kind === 'ask') {
+        flush();
+        const pending = a.asking && a.asking.id === e.approvalId;
+        const ans = visible.slice(idx + 1).find(x => x.kind === 'approved' || x.kind === 'rejected');
+        html += `<div class="m"><img class="ico" src="${avatarFor(a)}" alt=""><div class="body"><div class="askcard"><div class="q">${esc(a.name)} wants to ${e.tool === 'Bash' ? 'run' : 'use ' + esc(e.tool) + ' on'}:</div><code>${esc(e.text)}</code>${pending ? askButtons(e.approvalId, false) : `<div class="q" style="margin:6px 0 0">${ans ? esc(ans.text.split(':')[0]) : 'No longer waiting'}</div>`}</div></div></div>`;
+        return;
+      }
+      if (e.kind === 'approved' || e.kind === 'rejected') return;
       if (e.kind === 'system') { flush(); html += `<div class="note">${esc(e.text)}</div>`; return; }
       if (e.kind === 'error') { flush(); html += `<div class="errbox">${esc(e.text)}</div>`; return; }
+      if (e.kind === 'tool' && visible[idx + 1] && visible[idx + 1].kind === 'ask') return; // shown as the approval card instead
       if (!group) group = { t: e.t, items: [] };
       if (e.kind === 'assistant') group.items.push({ kind: 'assistant', text: e.text });
       else {
         let last = group.items[group.items.length - 1];
         if (!last || last.kind !== 'checks') { last = { kind: 'checks', list: [] }; group.items.push(last); }
+        if (e.kind === 'denied' && last.list.length && last.list[last.list.length - 1].cls === 'rejected') return;
         if (e.kind === 'denied') { const prev = last.list[last.list.length - 1]; if (prev) { prev.cls = 'denied'; prev.text += ' — not allowed'; } else last.list.push({ cls: 'denied', text: 'Blocked: ' + e.text.slice(0, 120) }); }
         else last.list.push({ cls: (a.status === 'working' && idx === visible.length - 1) ? 'running' : '', text: friendlyTool(e) });
       }
     });
     flush();
-    if (a.status === 'working') html += `<div class="working-line">${icon('spinner')}Working on the next steps…</div>`;
+    if (a.status === 'working' && !a.asking) html += `<div class="working-line">${icon('spinner')}Working on the next steps…</div>`;
     if (!entries.some(e => e.kind === 'user')) html += `<div class="chat-empty">Say hello to ${esc(a.name)} — try “Look around this project and tell me what it is.”</div>`;
     box.innerHTML = html; box.scrollTop = box.scrollHeight;
   }
@@ -396,6 +435,9 @@
       case 'denied': return `<div class="l warn">✗ ${esc(e.text)}</div>`;
       case 'error': return `<div class="l bad">✗ ${esc(e.text)}</div>`;
       case 'system': return `<div class="l ok">✓ ${esc(e.text)}</div>`;
+      case 'ask': return `<div class="l ask">Waiting for your OK: ${esc(e.text)}</div>`;
+      case 'approved': return `<div class="l ok">✓ ${esc(e.text)}</div>`;
+      case 'rejected': return `<div class="l warn">✗ ${esc(e.text)}</div>`;
       case 'assistant': return `<div class="l assistant">${esc(e.text.split('\n')[0].slice(0, 160))}</div>`;
     }
     return '';
@@ -491,11 +533,136 @@
       $('projDesc').textContent = project.description || (project.empty ? 'Empty project folder — ask an agent to start building.' : `Shared by agents working in “${a.folder}”.`);
       $('qaReadme').disabled = !project.readme;
     } catch (e) { $('projDesc').textContent = e.message; }
+    renderPipeline(); loadGit();
   }
   $('qaSwitch').onclick = () => openProjects();
   $('qaReveal').onclick = () => selected && api(`/api/agents/${selected}/reveal`, { method: 'POST' }).catch(e => toast(e.message));
   $('qaReadme').onclick = () => project && project.readme && openPath(project.readme);
   $('qaStopAll').onclick = () => api('/api/stop-all', { method: 'POST' }).then(() => toast('Stopping all running agents'));
+
+  // ---------- approvals ----------
+  function askButtons(id, compact) {
+    return `<div class="ask-btns"><button type="button" class="yes" data-decide="allow" data-id="${id}">✅ Allow</button><button type="button" class="no" data-decide="deny" data-id="${id}">❌ Deny</button>${compact ? '' : `<button type="button" data-decide="always" data-id="${id}" title="Allow now and add it to this agent's allowed commands">Always allow</button>`}</div>`;
+  }
+  async function decide(id, decision) {
+    try { await api(`/api/approvals/${id}`, { method: 'POST', body: JSON.stringify({ decision }) }); }
+    catch (e) { toast(e.message); }
+  }
+  for (const box of [$('labels'), $('tabChat')]) box.addEventListener('click', e => {
+    const b = e.target.closest('[data-decide]'); if (!b) return;
+    e.stopPropagation(); b.disabled = true; decide(b.dataset.id, b.dataset.decide);
+  });
+  function updateTitle() {
+    const n = [...agents.values()].filter(a => a.asking).length;
+    document.title = n ? `(${n}) AI Office — needs your OK` : 'AI Office';
+  }
+
+  // ---------- team pipelines ----------
+  const pipelinesByProject = new Map();
+  function curProjectId() { const a = cur(); return a ? a.project : (projects[0] && projects[0].id); }
+  function renderPipeline() {
+    const pid = curProjectId(), pl = pid && pipelinesByProject.get(pid), box = $('plBox');
+    const running = pl && pl.status === 'running';
+    $('plRun').textContent = running ? 'Stop' : 'Run';
+    $('plRun').classList.toggle('primary', !running);
+    if (!pl) { box.className = 'pl-box muted'; box.textContent = 'Architect plans → Developer builds → Tester checks.'; return; }
+    box.className = 'pl-box';
+    const steps = pl.steps.map(st => `<span class="pl-step ${st.status}" title="${esc(st.name)}">${esc(st.role)} · ${esc(st.name)}</span>`).join('<span class="pl-arrow">→</span>');
+    const verdict = pl.status === 'running' ? '' : `<div class="pl-verdict ${pl.status === 'passed' ? 'pass' : 'fail'}">${pl.status === 'passed' ? '✅ Passed' : pl.status === 'stopped' ? '⏹ Stopped' : '❌ ' + esc(pl.verdict || 'Failed')}</div>`;
+    box.innerHTML = `<div class="pl-goal" title="${esc(pl.goal)}">“${esc(pl.goal)}”</div><div class="pl-steps">${steps || '<span class="muted">Starting…</span>'}</div>${verdict}`;
+  }
+  $('plRun').onclick = async () => {
+    const pid = curProjectId(), pl = pid && pipelinesByProject.get(pid);
+    if (pl && pl.status === 'running') { if (confirm('Stop the team pipeline?')) api(`/api/pipelines/${pl.id}/stop`, { method: 'POST' }); return; }
+    if (!pid) return toast('Add agents to a project first.');
+    const team = [...agents.values()].filter(a => a.project === pid);
+    const who = r => (team.find(a => a.role === r) || {}).name;
+    const dev = who('developer') || who('custom');
+    $('plTeam').innerHTML = `In <b>${esc((projects.find(p => p.id === pid) || {}).name || '')}</b>: ` + [
+      who('architect') ? `📐 ${esc(who('architect'))} plans` : '<span class="muted">no Architect (skips planning)</span>',
+      dev ? `🛠 ${esc(dev)} builds` : '<span style="color:var(--red)">needs a Developer</span>',
+      who('tester') ? `🧪 ${esc(who('tester'))} tests` : '<span class="muted">no Tester (skips testing)</span>'].join(' → ');
+    $('plErr').textContent = ''; $('plDlg').showModal(); $('plGoal').focus();
+  };
+  $('plStart').addEventListener('click', async e => {
+    e.preventDefault(); if (!$('plForm').reportValidity()) return;
+    try {
+      const pl = await api(`/api/projects/${curProjectId()}/pipeline`, { method: 'POST', body: JSON.stringify({ goal: $('plGoal').value, maxRounds: +$('plRounds').value }) });
+      pipelinesByProject.set(pl.projectId, pl); renderPipeline(); $('plDlg').close(); $('plGoal').value = '';
+      toast('Team pipeline started');
+    } catch (err) { $('plErr').textContent = err.message; }
+  });
+
+  // ---------- git / GitLab ----------
+  let gitInfo = null;
+  async function loadGit() {
+    const pid = curProjectId(); if (!pid) { $('gitLine').textContent = 'Git'; $('mrBox').innerHTML = ''; return; }
+    try { gitInfo = await api(`/api/projects/${pid}/git`); } catch { gitInfo = null; }
+    renderGit();
+  }
+  function renderGit() {
+    const g = gitInfo;
+    if (!g || !g.isRepo) { $('gitLine').textContent = 'Not a git repository'; $('mrBox').innerHTML = ''; $('mrOpen').disabled = true; return; }
+    $('gitLine').innerHTML = `⎇ ${esc(g.branch || '?')}<span class="muted" style="font-weight:400"> · ${g.changes ? g.changes + ' changed file' + (g.changes > 1 ? 's' : '') : 'no changes'}</span>`;
+    const mr = g.mr;
+    $('mrBox').innerHTML = mr ? `<a href="${esc(mr.url)}" target="_blank" rel="noopener">!${mr.iid} ${esc(mr.title)}</a><span class="ci ${esc(mr.state === 'merged' ? 'merged' : mr.ci || 'pending')}"><i></i>${esc(mr.state === 'merged' ? 'merged' : 'CI ' + (mr.ci || 'pending'))}</span>`
+      : (g.gitlab && g.gitlab.hasToken ? '<span class="muted">No merge request yet.</span>' : '<span class="muted">Connect GitLab with the ⚙ button to open merge requests.</span>');
+    $('mrOpen').disabled = !g.remote;
+  }
+  $('glSettings').onclick = () => {
+    const g = (gitInfo && gitInfo.gitlab) || {};
+    $('glUrl').value = g.url || ''; $('glPath').value = g.path || ''; $('glTarget').value = g.target || ''; $('glAuto').checked = !!g.autoMR;
+    $('glToken').value = ''; $('glTokState').textContent = g.hasToken ? '(saved — leave empty to keep it)' : '';
+    $('glErr').textContent = ''; $('glDlg').showModal();
+  };
+  $('glSave').addEventListener('click', async e => {
+    e.preventDefault();
+    try {
+      gitInfo = await api(`/api/projects/${curProjectId()}/gitlab`, { method: 'POST', body: JSON.stringify({ url: $('glUrl').value, path: $('glPath').value, target: $('glTarget').value, autoMR: $('glAuto').checked, token: $('glToken').value || undefined }) });
+      $('glToken').value = ''; renderGit(); $('glDlg').close(); toast('GitLab settings saved');
+    } catch (err) { $('glErr').textContent = err.message; }
+  });
+  $('mrOpen').onclick = async () => {
+    await loadGit(); const g = gitInfo; if (!g) return;
+    if (!g.gitlab || !g.gitlab.hasToken) { $('glSettings').click(); return; }
+    const pid = curProjectId(), pl = pipelinesByProject.get(pid);
+    const a = cur();
+    const lastPrompt = a && (logs.get(a.id) || []).filter(e => e.kind === 'user' && !e.from).slice(-1)[0];
+    $('mrTitle').value = (pl && pl.goal) || (lastPrompt && lastPrompt.text.split('\n')[0].slice(0, 120)) || '';
+    $('mrDesc').value = pl && pl.verdict ? `Goal: ${pl.goal}\n\n${pl.verdict}` : '';
+    const newBranch = !g.branch || g.branch === (g.gitlab.target || 'main') || g.branch === 'master';
+    $('mrInfo').innerHTML = `${newBranch ? 'Creates a new branch from' : 'Pushes branch'} <b>${esc(g.branch || '')}</b> → <b>${esc(g.gitlab.target || 'default branch')}</b> on <code>${esc(g.gitlab.path)}</code>`;
+    $('mrFiles').textContent = g.changes ? `Commits ${g.changes} changed file${g.changes > 1 ? 's' : ''}: ${g.files.slice(0, 6).join(', ')}${g.files.length > 6 ? '…' : ''}` : 'No uncommitted changes — pushes existing commits.';
+    $('mrErr').textContent = ''; $('mrDlg').showModal();
+  };
+  $('mrGo').addEventListener('click', async e => {
+    e.preventDefault(); if (!$('mrForm').reportValidity()) return;
+    const btn = $('mrGo'); btn.disabled = true; btn.textContent = 'Pushing…';
+    try {
+      const a = cur();
+      const mr = await api(`/api/projects/${curProjectId()}/merge-request`, { method: 'POST', body: JSON.stringify({ title: $('mrTitle').value, description: $('mrDesc').value, agentId: a && a.id }) });
+      $('mrDlg').close(); toast(`Opened merge request !${mr.iid}`); loadGit();
+    } catch (err) { $('mrErr').textContent = err.message; }
+    finally { btn.disabled = false; btn.textContent = 'Commit, push & open MR'; }
+  });
+
+  // ---------- theme ----------
+  const THEME_KEY = 'aioffice.theme';
+  let theme = { ui: 'dark', sky: 'theme' };
+  try { Object.assign(theme, JSON.parse(localStorage.getItem(THEME_KEY) || '{}')); } catch { /* ignore */ }
+  const isNight = () => theme.sky === 'night' || (theme.sky === 'theme' && theme.ui !== 'light') || (theme.sky === 'auto' && (() => { const h = new Date().getHours(); return h >= 19 || h < 7; })());
+  function applyTheme() {
+    document.body.classList.toggle('light', theme.ui === 'light');
+    $('themeTop').innerHTML = icon(theme.ui === 'light' ? 'moon' : 'sun');
+    $('themeTop').title = theme.ui === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+    $('setTheme').value = theme.ui; $('setSky').value = theme.sky;
+    if (office) office.setNight(isNight());
+    try { localStorage.setItem(THEME_KEY, JSON.stringify(theme)); } catch { /* ignore */ }
+  }
+  $('themeTop').onclick = () => { theme.ui = theme.ui === 'light' ? 'dark' : 'light'; applyTheme(); };
+  $('setTheme').onchange = e => { theme.ui = e.target.value; applyTheme(); };
+  $('setSky').onchange = e => { theme.sky = e.target.value; applyTheme(); };
+  setInterval(() => { if (office && theme.sky === 'auto') office.setNight(isNight()); }, 60000);
 
   // ---------- hire ----------
   let hireRole = 'developer';
@@ -669,7 +836,7 @@
       const ev = JSON.parse(m.data);
       if (ev.type === 'agent') {
         const before = agents.get(ev.agent.id);
-        agents.set(ev.agent.id, { ...before, ...ev.agent }); renderAll();
+        agents.set(ev.agent.id, { ...before, ...ev.agent }); renderAll(); updateTitle();
         if (ev.agent.id === selected) { if (tab === 'context') renderContext(); if (before && before.project !== ev.agent.project) { openFile = null; expanded = new Set(); renderCode(); loadTree(); loadProject(); renderTerm(); } }
       }
       else if (ev.type === 'status') {
@@ -689,6 +856,21 @@
           if (ev.entry.kind === 'tool' && /Write|Edit/.test(ev.entry.tool || '')) refreshTreeSoon();
         }
       } else if (ev.type === 'projects') { loadProjects();
+      } else if (ev.type === 'approval') {
+        const a = agents.get(ev.approval.agentId);
+        if (a) { a.asking = ev.approval; toast(`${a.name} needs your OK to run: ${ev.approval.summary.slice(0, 60)}`); renderAll(); updateTitle(); if (ev.approval.agentId === selected) renderChat(); }
+      } else if (ev.type === 'approval-done') {
+        const a = agents.get(ev.agentId); if (a && a.asking && a.asking.id === ev.id) { a.asking = null; renderAll(); if (ev.agentId === selected) renderChat(); }
+        updateTitle();
+      } else if (ev.type === 'pipeline') {
+        pipelinesByProject.set(ev.pipeline.projectId, ev.pipeline); renderPipeline();
+        if (ev.pipeline.status === 'passed') toast('✅ Team pipeline passed'); else if (ev.pipeline.status === 'failed') toast('❌ Team pipeline failed');
+      } else if (ev.type === 'handoff') {
+        if (office) office.handoff(ev.from, ev.to, ev.label);
+      } else if (ev.type === 'git') {
+        const p = projects.find(x => x.id === ev.projectId); if (p) p.mr = ev.mr;
+        syncWorldAgents();
+        if (ev.projectId === curProjectId()) { if (gitInfo) gitInfo.mr = ev.mr; renderGit(); }
       } else if (ev.type === 'removed') {
         agents.delete(ev.id); logs.delete(ev.id);
         if (selected === ev.id) { selected = null; openFile = null; const next = agents.values().next().value; if (next) select(next.id); else { renderTab(); renderTerm(); loadTree(); loadProject(); renderCode(); } }
@@ -709,6 +891,8 @@
       for (const a of await api('/api/agents')) agents.set(a.id, a);
     } catch (e) { toast('Could not reach the bridge: ' + e.message); }
     await loadProjects();
+    try { for (const pl of (await api('/api/pipelines')).reverse()) pipelinesByProject.set(pl.projectId, pl); } catch { /* ignore */ }
+    applyTheme();
     applyView();
     renderAll(); renderTab(); renderTerm();
     connect(); pollSystem(); setInterval(pollSystem, 3000);

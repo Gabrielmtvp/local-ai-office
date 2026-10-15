@@ -48,7 +48,8 @@
     lab: { floor: ['#334155', '#2f3b4e', '#364459', '#303d51', '#2c374a'], wallL: '#1f2937', wallR: '#273244', trimL: '#0ea5e9', trimR: '#0ea5e9',
       sky: ['#020617', '#0f172a', '#134e4a', '#14b8a6'], bld: ['#0f172a', '#020617'], lit: ['#5eead4', '#2dd4bf'], stars: true, neon: ['Test', 'All', 'Things'], neonC: '#22d3ee', rug: ['#3b0764', '#581c87', '#6b21a8', '#c084fc'] },
   };
-  const STATUS = { idle: '#94a3b8', working: '#22c55e', waiting: '#facc15', error: '#ef4444' };
+  const STATUS = { idle: '#94a3b8', working: '#22c55e', waiting: '#facc15', error: '#ef4444', asking: '#fb923c' };
+  let NIGHT = false;
 
   // ---------- primitives ----------
   function poly(ctx, pts, fill) {
@@ -424,7 +425,7 @@
     box(ctx, x + 1.83, y + 0.05, 0.12, 0.12, h - 3, 0, '#5b3a22', '#5b3a22', '#4a2f1b');
     box(ctx, x + 1.3, y + 0.1, 0.6, 0.8, 8, 2, '#8d5a31', '#7a4d2a', '#5e3b20');
     const glow = !agent ? '#334155' : st === 'working' ? (Math.floor(t / 220) % 2 ? '#60a5fa' : '#3b82f6')
-      : st === 'waiting' ? '#facc15' : st === 'error' ? (Math.floor(t / 400) % 2 ? '#ef4444' : '#991b1b') : '#64748b';
+      : st === 'waiting' ? '#facc15' : st === 'asking' ? (Math.floor(t / 300) % 2 ? '#fb923c' : '#c2410c') : st === 'error' ? (Math.floor(t / 400) % 2 ? '#ef4444' : '#991b1b') : '#64748b';
     const top = up(iso(x + 1.0, y + 0.72), h);
     if (slot.kit === 'monitor') {
       px(ctx, top[0] - 2, top[1] - 6, 4, 6, '#111827');
@@ -458,6 +459,7 @@
     const c = STATUS[st];
     px(ctx, x, y, 13, 9, '#f8fafc'); px(ctx, x + 2, y + 9, 2, 2, '#f8fafc');
     if (st === 'waiting') { px(ctx, x + 5, y + 1, 3, 5, c); px(ctx, x + 5, y + 7, 3, 1, c); }
+    else if (st === 'asking') { const j = Math.floor(t / 250) % 2; px(ctx, x - 1, y - 1 - j, 15, 11, c); px(ctx, x, y - j, 13, 9, '#fff7ed'); px(ctx, x + 4, y + 1 - j, 5, 1, c); px(ctx, x + 8, y + 2 - j, 1, 2, c); px(ctx, x + 6, y + 4 - j, 2, 2, c); px(ctx, x + 6, y + 7 - j, 2, 1, c); }
     else if (st === 'error') { px(ctx, x + 3, y + 1, 2, 2, c); px(ctx, x + 8, y + 1, 2, 2, c); px(ctx, x + 5, y + 3, 3, 3, c); px(ctx, x + 3, y + 6, 2, 2, c); px(ctx, x + 8, y + 6, 2, 2, c); }
     else { ctx.fillStyle = '#64748b'; ctx.font = 'bold 7px monospace'; ctx.fillText(Math.floor(t / 900) % 2 ? 'z' : 'zZ', x + 2, y + 7); }
   }
@@ -833,7 +835,7 @@
   // ---------- outdoors: grass, streets, sidewalks, trees, cars ----------
   const treeCache = new Map();
   function treeSprite(seed, size) {
-    const key = seed + ':' + size;
+    const key = seed + ':' + size + (NIGHT ? ':n' : '');
     if (treeCache.has(key)) return treeCache.get(key);
     const c = document.createElement('canvas'); c.width = 64; c.height = 90;
     const g = c.getContext('2d'), R = rng(seed * 31 + 7), cx = 32, by = 84;
@@ -841,6 +843,7 @@
     g.globalAlpha = 0.25; g.fillStyle = '#000'; g.fillRect(cx - 14 * s, by - 3, 28 * s, 5); g.globalAlpha = 1;
     px(g, cx - 2, by - 18 * s, 4, 18 * s, '#6b4226'); px(g, cx - 2, by - 18 * s, 1, 18 * s, '#8a5a34');
     const greens = R() > 0.7 ? ['#1f5130', '#2b6b3c', '#378a4b', '#4fa85f'] : ['#1d4a2a', '#256238', '#2f7a44', '#3f9a55'];
+    if (NIGHT) for (let i = 0; i < greens.length; i++) greens[i] = ['#0f2a22', '#153528', '#1b4231', '#24533c'][i];
     const top = by - 18 * s, rad = 15 * s;
     for (let i = 0; i < 70; i++) {
       const a = R() * Math.PI * 2, r = Math.sqrt(R()) * rad;
@@ -864,8 +867,10 @@
   function streetLamp(ctx, x, y, t) {
     const p = iso(x, y);
     const g = ctx.createRadialGradient(p[0], p[1] - 4, 2, p[0], p[1] - 4, 34);
-    g.addColorStop(0, 'rgba(253,230,138,.28)'); g.addColorStop(1, 'rgba(253,230,138,0)');
-    ctx.fillStyle = g; ctx.fillRect(p[0] - 36, p[1] - 30, 72, 52);
+    const rr = NIGHT ? 52 : 34;
+    const g2 = ctx.createRadialGradient(p[0], p[1] - 4, 2, p[0], p[1] - 4, rr);
+    g2.addColorStop(0, NIGHT ? 'rgba(253,230,138,.42)' : 'rgba(253,230,138,.28)'); g2.addColorStop(1, 'rgba(253,230,138,0)');
+    ctx.fillStyle = g2; ctx.fillRect(p[0] - rr - 2, p[1] - rr + 4, rr * 2 + 4, rr * 1.5);
     px(ctx, p[0] - 1, p[1] - 46, 2, 46, '#1f2937'); px(ctx, p[0] - 4, p[1] - 2, 8, 2, '#111827');
     px(ctx, p[0] - 4, p[1] - 50, 8, 4, '#374151'); px(ctx, p[0] - 3, p[1] - 46, 6, 2, '#fde68a');
   }
@@ -890,6 +895,11 @@
     // lights
     const front = axis === 'x' ? up(iso(dir > 0 ? x0 + w : x0, y0 + d), 5) : up(iso(x0 + w, dir > 0 ? y0 + d : y0), 5);
     px(ctx, front[0] - 2, front[1] - 1, 3, 2, '#fef08a');
+    if (NIGHT) {
+      const fx = axis === 'x' ? dir * 2.2 : 0, fy = axis === 'y' ? dir * 2.2 : 0;
+      const a1 = iso(x + fx * 0.45, y + fy * 0.45), a2 = iso(x + fx + (axis === 'y' ? 0.7 : 0), y + fy + (axis === 'x' ? 0.7 : 0)), a3 = iso(x + fx - (axis === 'y' ? 0.7 : 0), y + fy - (axis === 'x' ? 0.7 : 0));
+      ctx.globalAlpha = 0.18; poly(ctx, [a1, a2, a3], '#fef9c3'); ctx.globalAlpha = 1;
+    }
   }
   const CAR_COLS = [['#ef4444', '#b91c1c', '#991b1b'], ['#3b82f6', '#1d4ed8', '#1e40af'], ['#f8fafc', '#cbd5e1', '#94a3b8'], ['#facc15', '#ca8a04', '#a16207'], ['#22c55e', '#15803d', '#166534'], ['#111827', '#1f2937', '#030712'], ['#a855f7', '#7e22ce', '#6b21a8']];
 
@@ -969,7 +979,7 @@
   function drawGround(WW, WH, WNX, WNY, MG, O) {
     const c = document.createElement('canvas'); c.width = WW; c.height = WH;
     const g = c.getContext('2d');
-    g.fillStyle = '#0b1220'; g.fillRect(0, 0, WW, WH);
+    g.fillStyle = NIGHT ? '#050914' : '#0b1220'; g.fillRect(0, 0, WW, WH);
     for (let x = -WNY - 2 * MG - 4; x < WNX + WNY + 2 * MG + 4; x++) for (let y = -WNX - 2 * MG - 4; y < WNX + WNY + 2 * MG + 4; y++) {
       const p = iso(x + 0.5, y + 0.5);
       if (p[0] < -30 || p[0] > WW + 30 || p[1] < -20 || p[1] > WH + 20) continue;
@@ -979,7 +989,10 @@
       if (O.isRoad(cx, cy)) col = (x + y) % 2 ? '#2b2f3a' : '#2e323d';
       else if (O.isWalk(cx, cy)) col = (x + y) % 2 ? '#8b93a3' : '#959dac';
       else if (O.isLot(cx, cy)) col = '#3a3f4b';
-      else { const n = (x * 73856093 ^ y * 19349663) >>> 0; col = ['#3d6b35', '#3e6d36', '#3c6934', '#3f6e37'][n % 4]; }
+      else { const n = (x * 73856093 ^ y * 19349663) >>> 0; col = (NIGHT ? ['#1a3326', '#1b3528', '#193124', '#1c3629'] : ['#3d6b35', '#3e6d36', '#3c6934', '#3f6e37'])[n % 4]; }
+      if (NIGHT && O.isRoad(cx, cy)) col = (x + y) % 2 ? '#181b24' : '#1a1d26';
+      else if (NIGHT && O.isWalk(cx, cy)) col = (x + y) % 2 ? '#3e4556' : '#434a5c';
+      else if (NIGHT && O.isLot(cx, cy)) col = '#20232b';
       poly(g, [iso(x, y), iso(x + 1, y), iso(x + 1, y + 1), iso(x, y + 1)], col);
       if (!O.isRoad(cx, cy) && !O.isWalk(cx, cy) && !O.isLot(cx, cy)) {
         const n = (x * 2654435761 ^ y * 40503) >>> 0;
@@ -1034,6 +1047,7 @@
     const bg = document.createElement('canvas'); bg.width = WW; bg.height = WH;
     const bgx = bg.getContext('2d');
     let agents = [], lastBg = -1e9, lastT = 0, wanderOn = true, onFrame = null, alive = true, selectedId = null;
+    let badges = {}; const handoffs = [];
     const walkers = new Map();
     const GX = WNX * 2 + 5, GY = WNY * 2 + 5, CELLW = 0.5; // building + sidewalk
     let grid = null, gridKey = '';
@@ -1170,7 +1184,19 @@
           const pool = (Math.random() < 0.6 && away.length) ? away : (home.length ? home : free);
           return pool[Math.floor(Math.random() * pool.length)];
         };
-        if (!wanderOn || !roaming(a)) {
+        const ho = handoffs.find(h => h.from === a.id && !h.started);
+        if (ho) {
+          const to = agents.find(x => x.id === ho.to && inWorld(x));
+          ho.started = true;
+          if (to) {
+            const dst = seatOf(to), target = centerW(...nearestFreeW(...cellOfW(dst.x + 0.6, dst.y - 0.6)));
+            const path = pathW(w.mode === 'seated' ? exitOf() : [w.x, w.y], target);
+            if (path) { w.path = [...(w.mode === 'seated' ? [exitOf()] : []), ...path]; w.mode = 'courier'; w.fast = true; w.poi = null; w.act = null; w.label = ho.label; w.toName = to.name; }
+          }
+        }
+        if (w.mode === 'courier' || w.mode === 'delivering') {
+          if (w.mode === 'delivering' && t > w.until) { w.label = null; goHome(false); }
+        } else if (!wanderOn || !roaming(a)) {
           if (w.mode === 'walking' || w.mode === 'activity') goHome(true);
         } else if (w.mode === 'seated' && t > w.nextAt) {
           const poi = pick(), exit = exitOf();
@@ -1185,7 +1211,7 @@
             else goHome(false);
           } else goHome(false);
         }
-        if (w.mode === 'walking' || w.mode === 'returning') {
+        if (w.mode === 'walking' || w.mode === 'returning' || w.mode === 'courier') {
           let remaining = (w.fast ? 3.4 : 1.4) * dt / 1000;
           while (remaining > 0 && w.path.length) {
             const [tx, ty] = w.path[0]; const dx = tx - w.x, dy = ty - w.y, dist = Math.hypot(dx, dy);
@@ -1195,16 +1221,19 @@
           w.walk += dt / 170;
           if (!w.path.length) {
             if (w.mode === 'returning') { w.mode = 'seated'; w.x = seat.x; w.y = seat.y; w.nextAt = t + 12000 + Math.random() * 15000; }
+            else if (w.mode === 'courier') { w.mode = 'delivering'; w.started = t; w.until = t + 1600; }
             else { w.mode = 'activity'; w.started = t; w.until = t + 7000 + Math.random() * 8000; w.act = w.poi.act; }
           }
         }
       }
+      for (let i = handoffs.length - 1; i >= 0; i--) if (handoffs[i].started || t - handoffs[i].t > 20000) handoffs.splice(i, 1);
     }
 
     function drawWalkerW(a, w, t) {
       const p = iso(w.x, w.y), look = lookFor(a);
       const opts = { noChair: true, pose: 'stand', walk: -1 };
-      if (w.mode === 'walking' || w.mode === 'returning') { opts.walk = w.walk; opts.back = w.back; }
+      if (w.mode === 'walking' || w.mode === 'returning' || w.mode === 'courier') { opts.walk = w.walk; opts.back = w.back; if (w.mode === 'courier') opts.hold = 'book'; }
+      else if (w.mode === 'delivering') { opts.hold = 'book'; opts.happy = true; }
       else if (w.mode === 'activity') {
         const el = t - w.started;
         opts.back = !!w.poi.back;
@@ -1224,7 +1253,10 @@
       ctx.globalAlpha = 0.25; px(ctx, p[0] - 7, p[1] - 1, 14, 3, '#000'); ctx.globalAlpha = 1;
       drawCharacter(ctx, p[0], opts.pose === 'sofa' ? p[1] - 8 : p[1], look, a.status, t, 2, opts);
       const top = p[1] - 44;
-      if (a.status === 'waiting') bubble(ctx, p[0] + 9, top, 'waiting', t);
+      if (w.mode === 'courier' || w.mode === 'delivering') { // paper icon
+        px(ctx, p[0] + 8, top - 1, 13, 11, '#f8fafc'); px(ctx, p[0] + 10, top - 3, 9, 14, '#e2e8f0'); px(ctx, p[0] + 11, top, 7, 1, '#64748b'); px(ctx, p[0] + 11, top + 3, 7, 1, '#64748b'); px(ctx, p[0] + 11, top + 6, 5, 1, '#64748b');
+      } else if (a.status === 'asking') bubble(ctx, p[0] + 9, top, 'asking', t);
+      else if (a.status === 'waiting') bubble(ctx, p[0] + 9, top, 'waiting', t);
       else if (w.mode === 'activity' && w.act === 'cat') {
         const x = p[0] + 9, y = top, c = '#ef4444';
         px(ctx, x, y, 13, 9, '#f8fafc'); px(ctx, x + 2, y + 9, 2, 2, '#f8fafc');
@@ -1250,6 +1282,12 @@
           const s = SLOTS[d]; const w = walkers.get(a.id);
           local.push({ k: s.x + s.y + 2.5, f: () => {
             desk(ctx, s, a, +d, t, !w || w.mode === 'seated');
+            const ci = badges[a.id];
+            if (ci) { // little CI flag on the desk
+              const fp = up(iso(s.x + 1.85, s.y + 0.2), 14);
+              const col = { success: '#22c55e', passed: '#22c55e', failed: '#ef4444', canceled: '#94a3b8', skipped: '#94a3b8', running: Math.floor(t / 300) % 2 ? '#3b82f6' : '#93c5fd', pending: '#facc15', created: '#facc15', merged: '#a855f7' }[ci] || '#94a3b8';
+              px(ctx, fp[0], fp[1] - 18, 1, 18, '#e2e8f0'); px(ctx, fp[0] + 1, fp[1] - 18, 8, 6, col); px(ctx, fp[0] + 1, fp[1] - 12, 8, 1, 'rgba(0,0,0,.25)');
+            }
             if (a.id === selectedId) { // selection ring around the desk
               ctx.strokeStyle = 'rgba(248,250,252,.9)'; ctx.lineWidth = 1; ctx.beginPath();
               [[s.x - 0.25, s.y - 0.75], [s.x + 2.25, s.y - 0.75], [s.x + 2.25, s.y + 1.25], [s.x - 0.25, s.y + 1.25]].forEach((p, i) => i ? ctx.lineTo(...iso(...p)) : ctx.moveTo(...iso(...p)));
@@ -1288,10 +1326,40 @@
       }
       items.sort((a, b) => a.k - b.k).forEach(it => it.f());
       useGeom(WOX, WOY);
+      if (NIGHT) nightLights(t);
       if (onFrame) onFrame();
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
+
+    // Night: dim the inside of the building, then add warm ceiling lights, monitor glow and hallway lights.
+    function nightLights(t) {
+      const hex = [iso(0, WNY), wallL(WNY, WALL), [iso(0, 0)[0], iso(0, 0)[1] - WALL], wallR(WNX, WALL), iso(WNX, 0), up(iso(WNX, 0), -8), up(iso(WNX, WNY), -8), up(iso(0, WNY), -8)];
+      ctx.save();
+      ctx.beginPath(); ctx.moveTo(...hex[0]); hex.slice(1).forEach(p => ctx.lineTo(...p)); ctx.closePath(); ctx.clip();
+      ctx.fillStyle = 'rgba(6,10,28,0.5)'; ctx.fillRect(0, 0, WW, WH);
+      ctx.globalCompositeOperation = 'lighter';
+      const pool = (x, y, r, rgb, a) => {
+        const p = iso(x, y), g = ctx.createRadialGradient(p[0], p[1] - 6, 1, p[0], p[1] - 6, r);
+        g.addColorStop(0, `rgba(${rgb},${a})`); g.addColorStop(1, `rgba(${rgb},0)`);
+        ctx.fillStyle = g; ctx.fillRect(p[0] - r, p[1] - 6 - r, r * 2, r * 2);
+      };
+      const flick = 0.92 + 0.08 * Math.sin(t / 900);
+      for (const r of rooms) { // two ceiling lamps per room
+        const warm = r.layout === 'games' ? '190,120,255' : r.layout === 'lounge' ? '255,190,120' : '255,214,160';
+        pool(r.o.x + 3.2, r.o.y + 4.2, 95, warm, 0.20 * flick);
+        pool(r.o.x + 6.8, r.o.y + 6.0, 95, warm, 0.20 * flick);
+        if (r.layout === 'games') pool(r.o.x + 2.3, r.o.y + 1.2, 60, '80,220,255', 0.18); // arcade glow
+      }
+      for (const a of agents.filter(inWorld)) { // monitors light up the desks
+        const s = seatOf(a), st = a.status;
+        const rgb = st === 'working' ? '96,165,250' : st === 'asking' ? '251,146,60' : st === 'waiting' ? '250,204,21' : st === 'error' ? '239,68,68' : '148,163,184';
+        pool(s.x, s.y + 0.7, st === 'working' ? 46 : 34, rgb, st === 'working' ? 0.32 + 0.06 * Math.sin(t / 200) : 0.2);
+      }
+      for (let c = 0; c < C - 1; c++) for (let y = 2; y < WNY; y += 6) pool(c * 12 + 11, y, 55, '190,210,255', 0.13);
+      for (let r = 0; r < R - 1; r++) for (let x = 2; x < WNX; x += 6) pool(x, r * 12 + 11, 55, '190,210,255', 0.13);
+      ctx.restore();
+    }
 
     function roomAt(cx, cy) {
       const X = cx - WOX, Y = cy - WOY; const gx = (Y / TH + X / TW) / 2, gy = (Y / TH - X / TW) / 2;
@@ -1300,6 +1368,9 @@
     return {
       W: WW, H: WH, rooms,
       destroy() { alive = false; },
+      handoff(from, to, label) { handoffs.push({ from, to, label, t: performance.now(), started: false }); },
+      setBadges(b) { badges = b || {}; },
+      setNight(v) { if (NIGHT !== !!v) { NIGHT = !!v; ground = null; lastBg = -1e9; } },
       setAgents(list) { agents = list; },
       setSelected(id) { selectedId = id; },
       setWander(v) { wanderOn = v; },
@@ -1339,6 +1410,8 @@
       activity(a) {
         const w = walkers.get(a.id); if (!w || w.mode === 'seated') return null;
         if (w.mode === 'returning') return 'Heading back to the desk';
+        if (w.mode === 'courier') return `Bringing the ${String(w.label || 'work').toLowerCase()} to ${w.toName}`;
+        if (w.mode === 'delivering') return `Handing over to ${w.toName}`;
         if (w.mode === 'walking') { if (w.poi && w.poi.room === '_outside') return 'Going outside'; const r = w.poi && roomOf(w.poi.room); return r && r.id !== a.room ? `Walking to ${r.name}` : 'Walking'; }
         return w.poi ? w.poi.say : null;
       },

@@ -57,6 +57,28 @@ Shortcuts: **F** focus (only the office), **Esc** exit focus, **C** chat, **E** 
 
 Reading output: **A− / A+** in the chat header change the text size; drag the chat panel's left edge to make it wider (double-click to reset).
 
+## Approvals
+When an agent wants to run a command that isn't on its allowed list, it pauses and asks you:
+its label in the building turns into an orange card with **✅ Allow / ❌ Deny**, and the chat shows the
+same request with **Always allow** (adds it to the agent's allowed commands). The tab title shows how many
+requests are waiting. This uses Claude Code's `--permission-prompt-tool` with a tiny local MCP helper (`perm-mcp.js`).
+
+## Team pipelines
+In Project Info → **Team pipeline → Run**, describe a goal. The Architect writes a plan and walks it over to the
+Developer, who builds it and brings it to the Tester. The Tester runs the tests and answers `VERDICT: PASS/FAIL`;
+on FAIL the bug report goes back to the Developer for another round (you choose how many).
+
+## GitLab merge requests
+Project Info → ⚙ next to Git: GitLab URL (gitlab.com or your company's server), project path and an access
+token (scope `api`). The token is stored only in `secrets.json` next to `server.js` (owner-only permissions).
+**Open merge request…** commits the changes, creates a branch if you're on the default branch, pushes with your
+normal git credentials and opens the MR. The MR's CI status shows in Project Info and as a flag on the agent's desk.
+Optional: open an MR automatically when a team pipeline passes (off by default).
+
+## Themes
+The sun/moon button switches between dark and light. The building follows the theme by default
+(dark = night inside and out, light = day); Settings also offers "follow your clock", always day or always night.
+
 ## How it works
 - `server.js` runs `claude -p "<task>" --output-format stream-json --verbose --permission-mode <mode>`
   inside the agent's folder and streams the events to the office. Follow-up
@@ -70,8 +92,8 @@ Reading output: **A− / A+** in the chat header change the text size; drag the 
 - Agents work inside their project folder: a new folder under `~/AI-Office/workspaces`, or an existing
   folder you attach (inside your home directory; hidden and system folders are refused).
 - Modes: `plan` (read-only) or `acceptEdits` (may create/edit files).
-- Shell commands only run if they start with one of the agent's *allowed commands*
-  (passed as `--allowedTools "Bash(npm test:*)"`). `--dangerously-skip-permissions` is never used.
+- Commands on an agent's *allowed commands* list run automatically (`--allowedTools "Bash(npm test:*)"`);
+  everything else waits for your Allow / Deny. `--dangerously-skip-permissions` is never used.
 - The Editor can only read files inside the agent's project folder (symlinks can't escape).
   Denied actions show as ⛔ in the chat.
 
